@@ -34,22 +34,10 @@ Then add `HanoiCore` to your target dependencies:
 )
 ```
 
-## CLI Installation
+## CLI Tool Installation
 
 ### Download (easy)
 Download the release for your platform from the releases page. Then run `chmod +x FILENAME` and move it to any location on your path.
-
-After building the package:
-
-```bash
-swift build -c release
-```
-
-Run the CLI:
-
-```bash
-.build/release/hanoi
-```
 
 ### Building From Source
 
