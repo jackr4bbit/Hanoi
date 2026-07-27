@@ -1,0 +1,223 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: write
+
+
+jobs:
+  build-macos:
+    name: macOS Universal
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.10"
+
+      - name: Build arm64
+        run: |
+          swift build \
+            -c release \
+            --product hanoi \
+            --arch arm64
+
+      - name: Build x86_64
+        run: |
+          swift build \
+            -c release \
+            --product hanoi \
+            --arch x86_64
+
+      - name: Create universal binary
+        run: |
+          mkdir dist
+
+          lipo \
+            .build/arm64-apple-macosx/release/hanoi \
+            .build/x86_64-apple-macosx/release/hanoi \
+            -create \
+            -output dist/hanoi-macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hanoi-macos
+          path: dist/hanoi-macos
+
+
+
+  build-linux:
+    name: Linux
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.10"
+
+      - name: Build
+        run: |
+          swift build \
+            -c release \
+            --product hanoi
+
+      - name: Package
+        run: |
+          mkdir dist
+          cp .build/release/hanoi dist/hanoi-linux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hanoi-linux
+          path: dist/hanoi-linux
+
+
+
+  docs-build:
+    name: Build Documentation
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.10"
+
+      - name: Build DocC
+        run: |
+          rm -rf ./docc-output
+          rm -rf .build/plugins/Swift-DocC
+          
+          swift package generate-documentation \
+            --target HanoiCore
+
+          DOCS=$(find .build/plugins/Swift-DocC -name "*.doccarchive" | head -n 1)
+
+          if [ -z "$DOCS" ]; then
+            echo "No .doccarchive found!"
+            exit 1
+          fi
+          
+          $(xcrun --find docc) process-archive transform-for-static-hosting \
+            "$DOCS" \
+            --hosting-base-path hanoi \
+            --output-path ./docc-output
+
+      - name: Archive Documentation
+        run: |
+          zip -r docc-output.zip ./docc-output
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docc-output
+          path: docc-output.zip
+
+
+  docs-deploy:
+    name: Deploy Documentation
+    needs: docs-build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docc-output
+          path: .
+
+      - name: Extract Documentation
+        run: |
+          unzip docc-output.zip
+          
+      - name: Fix DocC paths
+        working-directory: ./docc-output
+        run: |
+          find . -name "*.html" -exec sed -i \
+            -e 's|src="/js/|src="js/|g' \
+            -e 's|href="/css/|href="css/|g' \
+            -e 's|href="/favicon|href="favicon|g' \
+            {} \;
+
+          find . -name "*.js" -exec sed -i \
+            's|var baseUrl = "/"|var baseUrl = "/hanoi/"|g' \
+            {} \;
+
+      - name: Tailscale Tunnel
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: ${{ secrets.SERVER_HOST }}
+
+      - name: Upload Docs via SFTP
+        uses: wlixcc/SFTP-Deploy-Action@v1.2.4
+        with:
+          username: ${{ secrets.SERVER_USERNAME }}
+          server: ${{ secrets.SERVER_HOST }}
+          ssh_private_key: ${{ secrets.SERVER_PRIVATE_KEY }}
+          port: 22
+          local_path: "./docc-output/*"
+          remote_path: "/var/www/html/main/hanoi/"
+
+
+  release:
+    name: GitHub Release
+    needs:
+      - build-macos
+      - build-linux
+      - docs-deploy
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+
+      - name: Install git-cliff
+        run: |
+          curl -Ls \
+          https://github.com/orhun/git-cliff/releases/download/v2.13.1/git-cliff-2.13.1-x86_64-unknown-linux-gnu.tar.gz \
+          | tar xz
+
+          sudo mv git-cliff*/git-cliff /usr/local/bin/git-cliff
+
+
+      - name: Generate changelog
+        run: |
+          git cliff --latest > CHANGELOG.md
+
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+
+      - name: Prepare release
+        run: |
+          mkdir release
+
+          cp artifacts/hanoi-macos/hanoi-macos release/
+          cp artifacts/hanoi-linux/hanoi-linux release/
+
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: release/*
+          body_path: CHANGELOG.md
