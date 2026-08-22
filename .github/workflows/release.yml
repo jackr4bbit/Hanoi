@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -69,7 +70,8 @@ jobs:
         run: |
           swift build \
             -c release \
-            --product hanoi
+            --product hanoi \
+            --static-swift-stdlib
 
       - name: Package
         run: |
